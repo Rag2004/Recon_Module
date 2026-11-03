@@ -71,12 +71,20 @@ def neo_security_id(row: dict) -> str:
     return str(row.get("trdSym") or row.get("sym") or "").strip()
 
 
+def _rejected(response) -> bool:
+    if not isinstance(response, dict):
+        return False
+    status = response.get("status_code") or response.get("stCode")
+    if status in (400, "400", 403, "403", 424, "424"):
+        return True
+    return bool(response.get("error"))
+
+
 def rows_from_positions(payload) -> list[dict]:
     data = payload
     if isinstance(payload, dict):
-        status = payload.get("status_code") or payload.get("stCode")
-        if status in (403, "403"):
-            raise PermissionError("kotak session expired")
+        if _rejected(payload):
+            raise PermissionError("kotak session rejected")
         nested = payload.get("data")
         data = nested if isinstance(nested, list) else []
     if not isinstance(data, list):
@@ -126,11 +134,11 @@ def _login():
         raise RuntimeError("Kotak credentials incomplete")
     client = NeoAPI(consumer_key=token, environment="prod")
     login = client.totp_login(mobile_number=mobile, ucc=ucc, totp=totp_code(secret))
-    if isinstance(login, dict) and (login.get("status_code") or login.get("stCode")) in (403, "403"):
-        raise RuntimeError("Kotak totp_login unauthorized")
+    if _rejected(login):
+        raise RuntimeError("Kotak totp_login rejected")
     validate = client.totp_validate(mpin=mpin)
-    if isinstance(validate, dict) and (validate.get("status_code") or validate.get("stCode")) in (403, "403"):
-        raise RuntimeError("Kotak totp_validate unauthorized")
+    if _rejected(validate):
+        raise RuntimeError("Kotak totp_validate rejected")
     return client
 
 

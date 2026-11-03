@@ -1,3 +1,5 @@
+import pytest
+
 from app.kotak_positions import neo_net_qty, neo_security_id, rows_from_positions
 from app.loop import desk_broker_id
 from app.config import settings
@@ -27,6 +29,11 @@ def test_rows_drop_flat_positions():
     }
     rows = rows_from_positions(payload)
     assert rows == [{"security_id": "1", "net_qty": 5, "symbol": "AAA"}]
+
+
+def test_error_payload_is_rejected():
+    with pytest.raises(PermissionError):
+        rows_from_positions({"status_code": 424, "error": [{"code": "10508"}]})
 
 
 def test_kotak_mode_uses_kotak_book(monkeypatch):
