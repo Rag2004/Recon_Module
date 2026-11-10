@@ -44,7 +44,7 @@ def reset_session() -> None:
 
 
 def neo_net_qty(row: dict) -> int:
-    """Signed net quantity. FnO quantities from Neo are in shares and are divided by lot size."""
+    """Signed net quantity in shares, the same unit Kotak fills and the desk stores."""
 
     def num(key: str) -> float:
         try:
@@ -55,10 +55,6 @@ def neo_net_qty(row: dict) -> int:
     buy = num("cfBuyQty") + num("flBuyQty")
     sell = num("cfSellQty") + num("flSellQty")
     net = buy - sell
-    lot = num("lotSz") or 1.0
-    segment = str(row.get("exSeg") or "").lower()
-    if lot > 1 and "fo" in segment:
-        net = net / lot
     if net == 0 and row.get("qty") not in (None, ""):
         net = num("qty")
     return int(round(net))
@@ -71,12 +67,20 @@ def neo_security_id(row: dict) -> str:
     return str(row.get("trdSym") or row.get("sym") or "").strip()
 
 
+def _rejected(response) -> bool:
+    if not isinstance(response, dict):
+        return False
+    status = response.get("status_code") or response.get("stCode")
+    if status in (400, "400", 403, "403", 424, "424"):
+        return True
+    return bool(response.get("error"))
+
+
 def rows_from_positions(payload) -> list[dict]:
     data = payload
     if isinstance(payload, dict):
-        status = payload.get("status_code") or payload.get("stCode")
-        if status in (403, "403"):
-            raise PermissionError("kotak session expired")
+        if _rejected(payload):
+            raise PermissionError("kotak session rejected")
         nested = payload.get("data")
         data = nested if isinstance(nested, list) else []
     if not isinstance(data, list):
@@ -113,49 +117,97 @@ def _load_credentials() -> dict:
     return body
 
 
-def _login():
+def _clear_trade_session(doc: dict) -> None:
+    doc.pop("trade_token", None)
+    doc.pop("trade_sid", None)
+    doc.pop("trade_base_url", None)
+    doc["session_at"] = ""
+    try:
+        import redis as redis_lib
+
+        redis_lib.from_url(
+            settings.REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=0.4,
+            socket_timeout=0.4,
+        ).set(_KOTAK_KEY, json.dumps(doc))
+    except Exception as exc:
+        logger.warning("Kotak session clear failed: %s", exc)
+
+
+def _client_from_session(doc: dict):
     from neo_api_client import NeoAPI
 
-    doc = _load_credentials()
     token = str(doc.get("access_token") or "").strip()
-    mobile = normalize_mobile(doc.get("mobile"))
-    ucc = str(doc.get("client_id") or "").strip()
-    mpin = str(doc.get("mpin") or "").strip()
-    secret = str(doc.get("totp_secret") or "").strip()
-    if not (token and mobile and ucc and mpin and secret):
-        raise RuntimeError("Kotak credentials incomplete")
+    trade = str(doc.get("trade_token") or "").strip()
+    sid = str(doc.get("trade_sid") or "").strip()
+    if not (token and trade and sid):
+        raise RuntimeError("Kotak session is not generated. Enter the authenticator code on the Kotak page.")
     client = NeoAPI(consumer_key=token, environment="prod")
-    login = client.totp_login(mobile_number=mobile, ucc=ucc, totp=totp_code(secret))
-    if isinstance(login, dict) and (login.get("status_code") or login.get("stCode")) in (403, "403"):
-        raise RuntimeError("Kotak totp_login unauthorized")
-    validate = client.totp_validate(mpin=mpin)
-    if isinstance(validate, dict) and (validate.get("status_code") or validate.get("stCode")) in (403, "403"):
-        raise RuntimeError("Kotak totp_validate unauthorized")
+    cfg = getattr(client, "configuration", None)
+    if cfg is None:
+        raise RuntimeError("Neo client has no configuration")
+    cfg.edit_token = trade
+    cfg.edit_sid = sid
+    base = str(doc.get("trade_base_url") or "").strip()
+    if base:
+        cfg.base_url = base
     return client
 
 
 def _ensure_client():
     global _client
     if _client is None:
-        _client = _login()
+        _client = _client_from_session(_load_credentials())
     return _client
 
 
+def _session_rejected(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if _rejected(payload):
+        return True
+    text = str(payload.get("Error Message") or payload.get("Error") or "").lower()
+    return "2fa" in text or "unauthorized" in text or "session" in text
+
+
+_kotak_positions_cache: dict = {"at": 0.0, "rows": None}
+_KOTAK_POSITIONS_TTL_SEC = 10.0
+
+
+def fetch_kotak_positions_cached() -> list[dict]:
+    """Reuse a successful Neo book for a few seconds so a 10s recon tick does not spam positions()."""
+    now = time.monotonic()
+    cached = _kotak_positions_cache.get("rows")
+    cached_at = float(_kotak_positions_cache.get("at") or 0)
+    if cached is not None and now - cached_at < _KOTAK_POSITIONS_TTL_SEC:
+        return cached
+    try:
+        rows = fetch_kotak_positions()
+    except Exception:
+        # One timeout must not blank the broker book while the last good snapshot is still fresh.
+        if cached is not None and now - cached_at < _KOTAK_POSITIONS_TTL_SEC * 2:
+            logger.warning("Kotak positions failed; reusing last good book for one more window")
+            _kotak_positions_cache["at"] = now
+            return cached
+        raise
+    _kotak_positions_cache["at"] = now
+    _kotak_positions_cache["rows"] = rows
+    return rows
+
+
 def fetch_kotak_positions() -> list[dict]:
-    """Live Neo positions. One re-login if the cached session is rejected."""
-    last_error: Exception | None = None
-    for attempt in (1, 2):
-        try:
-            payload = _ensure_client().positions()
-            return rows_from_positions(payload)
-        except PermissionError as exc:
-            last_error = exc
-            reset_session()
-            logger.info("Kotak recon session refresh attempt=%s", attempt)
-        except Exception as exc:
-            last_error = exc
-            reset_session()
-            if attempt == 2:
-                break
-            logger.info("Kotak recon login retry: %s", exc)
-    raise RuntimeError(f"Kotak positions failed: {last_error}")
+    """Live Neo positions from the session saved on the Kotak page."""
+    doc = _load_credentials()
+    if not (str(doc.get("trade_token") or "").strip() and str(doc.get("trade_sid") or "").strip()):
+        raise RuntimeError("Kotak session is not generated. Enter the authenticator code on the Kotak page.")
+    try:
+        payload = _ensure_client().positions()
+    except Exception as exc:
+        reset_session()
+        raise RuntimeError(f"Kotak positions failed: {exc}") from exc
+    if _session_rejected(payload):
+        reset_session()
+        _clear_trade_session(doc)
+        raise RuntimeError("Kotak session was rejected. Generate a new one on the Kotak page.")
+    return rows_from_positions(payload)

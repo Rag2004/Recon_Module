@@ -68,6 +68,70 @@ def test_match_raises_no_alert():
     assert _leg(-3, -3, -3) is None
 
 
+def test_blank_strategy_security_id_uses_infra_to_match_broker():
+    strategy = [
+        {
+            "strategy_id": "SN_275_T13",
+            "broker_id": "kotak_sandbox",
+            "instrument": "SENSEX-05Nov2026-79300-CE",
+            "security_id": "",
+            "signed_qty": 20,
+        }
+    ]
+    infra = [
+        {
+            "strategy_id": "SN_275_T13",
+            "broker_id": "kotak_sandbox",
+            "underlying": "SENSEX",
+            "expiry": "2026-11-05",
+            "strike": 79300,
+            "option_type": "CE",
+            "side": "BUY",
+            "quantity": 20,
+            "security_id": "1134391",
+        }
+    ]
+    alerts = build_alerts(
+        strategy,
+        infra,
+        [{"security_id": "1134391", "net_qty": 20}],
+        now="t",
+    )
+    assert alerts == []
+
+
+def test_wrong_strategy_security_id_falls_back_to_infra():
+    strategy = [
+        {
+            "strategy_id": "SN_275_T13",
+            "broker_id": "kotak_sandbox",
+            "instrument": "SENSEX-05Nov2026-76900-CE",
+            "security_id": "999999",
+            "signed_qty": -20,
+        }
+    ]
+    infra = [
+        {
+            "strategy_id": "SN_275_T13",
+            "broker_id": "kotak_sandbox",
+            "underlying": "SENSEX",
+            "expiry": "2026-11-05",
+            "strike": 76900,
+            "option_type": "CE",
+            "side": "SELL",
+            "quantity": 20,
+            "security_id": "1134001",
+        }
+    ]
+    alerts = build_alerts(
+        strategy,
+        infra,
+        [{"security_id": "1134001", "net_qty": -20}],
+        now="t",
+    )
+    assert alerts == []
+
+
 def test_build_alerts_shared_security_has_no_button():
     strategy = [
         {"strategy_id": "SN_S01", "broker_id": "dhan_sandbox", "instrument": "SENSEX-26Oct2026-80000-CE", "security_id": "9", "signed_qty": -20},

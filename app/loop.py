@@ -126,9 +126,9 @@ def fetch_broker_positions(db) -> list[dict]:
     if broker_mode() == "mock":
         return fetch_mock_broker_positions(db)
     if broker_mode() == "kotak":
-        from app.kotak_positions import fetch_kotak_positions
+        from app.kotak_positions import fetch_kotak_positions_cached
 
-        return fetch_kotak_positions()
+        return fetch_kotak_positions_cached()
     return fetch_dhan_positions()
 
 
@@ -177,10 +177,15 @@ def run_tick(db, *, fetch_positions=None, csv_path: Path | None = None) -> dict:
     return {"ok": True, "alerts": len(alerts)}
 
 
+def recon_loop_interval() -> float:
+    """Seconds between ticks. Allow up to 60s so Neo is not hammered."""
+    return max(1.0, min(float(settings.RECON_INTERVAL_SEC or 10), 60.0))
+
+
 def loop_forever(stop_event=None) -> None:
     client = MongoClient(settings.MONGO_URI)
     db = client[settings.MONGO_DB_NAME]
-    interval = max(1.0, min(float(settings.RECON_INTERVAL_SEC or 1), 2.0))
+    interval = recon_loop_interval()
     logger.info("recon loop every %.1fs mode=%s csv=%s", interval, broker_mode(), open_csv_path())
     while stop_event is None or not stop_event.is_set():
         started = time.monotonic()

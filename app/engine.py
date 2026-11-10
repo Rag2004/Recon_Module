@@ -8,6 +8,23 @@ from app.books import infra_instrument, signed_qty
 from app.diff import propose_leg
 
 
+def resolve_broker_security_id(
+    strategy: dict | None,
+    infra: dict | None,
+    broker_by_security: dict[str, int],
+) -> str:
+    """Prefer the desk Mongo id. Fall back to the strategy id, then the other side if Neo misses."""
+    infra_id = str((infra or {}).get("security_id") or "").strip()
+    strategy_id = str((strategy or {}).get("security_id") or "").strip()
+    primary = infra_id or strategy_id
+    if primary and primary in broker_by_security:
+        return primary
+    secondary = strategy_id if primary == infra_id else infra_id
+    if secondary and secondary in broker_by_security:
+        return secondary
+    return primary or secondary
+
+
 def build_alerts(
     strategy_rows: list[dict],
     infra_rows: list[dict],
@@ -71,7 +88,7 @@ def build_alerts(
     for key in sorted(keys):
         strategy = strategy_by_key.get(key)
         infra = infra_by_key.get(key)
-        security_id = str((strategy or infra or {}).get("security_id") or "")
+        security_id = resolve_broker_security_id(strategy, infra, broker_by_security)
         owners = owners_by_security.get(security_id, set())
         shared = bool(security_id) and len(owners) > 1
         broker_qty: int | None

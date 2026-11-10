@@ -1,9 +1,11 @@
+import pytest
+
 from app.kotak_positions import neo_net_qty, neo_security_id, rows_from_positions
 from app.loop import desk_broker_id
 from app.config import settings
 
 
-def test_fno_net_qty_is_lots():
+def test_fno_net_qty_stays_in_shares():
     row = {
         "exSeg": "nse_fo",
         "lotSz": "20",
@@ -13,7 +15,7 @@ def test_fno_net_qty_is_lots():
         "flSellQty": "0",
         "tok": "99",
     }
-    assert neo_net_qty(row) == 2
+    assert neo_net_qty(row) == 40
     assert neo_security_id(row) == "99"
 
 
@@ -27,6 +29,11 @@ def test_rows_drop_flat_positions():
     }
     rows = rows_from_positions(payload)
     assert rows == [{"security_id": "1", "net_qty": 5, "symbol": "AAA"}]
+
+
+def test_error_payload_is_rejected():
+    with pytest.raises(PermissionError):
+        rows_from_positions({"status_code": 424, "error": [{"code": "10508"}]})
 
 
 def test_kotak_mode_uses_kotak_book(monkeypatch):

@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     LOG_LEVEL: str = "INFO"
     RECON_SERVICE_PORT: int = 8013
-    RECON_INTERVAL_SEC: float = 1.0
+    RECON_INTERVAL_SEC: float = 10.0
     # dhan = GET /v2/positions. kotak = Neo positions(). mock = paper book.
     RECON_BROKER_MODE: str = "dhan"
     MONGO_URI: str = "mongodb://localhost:27017"
