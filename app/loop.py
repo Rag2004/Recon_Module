@@ -144,7 +144,18 @@ def load_infra(db) -> list[dict]:
 def sync_alerts(db, alerts: list[dict]) -> None:
     coll = db[COLLECTION]
     live = {row["fingerprint"] for row in alerts}
+    dismissed: set[str] = set()
+    if live:
+        for doc in coll.find(
+            {"status": "dismissed", "fingerprint": {"$in": list(live)}},
+            {"fingerprint": 1},
+        ):
+            fingerprint = str(doc.get("fingerprint") or "")
+            if fingerprint:
+                dismissed.add(fingerprint)
     for row in alerts:
+        if row["fingerprint"] in dismissed:
+            continue
         coll.update_one(
             {"fingerprint": row["fingerprint"]},
             {"$set": row, "$setOnInsert": {"created_at": row["updated_at"]}},

@@ -148,6 +148,34 @@ def test_build_alerts_shared_security_has_no_button():
     assert shared[0]["actionable"] is False
 
 
+def test_dismissed_fingerprint_is_not_reopened():
+    from app.loop import sync_alerts
+
+    fingerprint = "NF_S90_T1|kotak_sandbox|NIFTY-09Nov2026-25150-CE|send_entry|65|0|0"
+    stored = [{"fingerprint": fingerprint, "status": "dismissed"}]
+
+    class Coll:
+        def find(self, query, projection=None):
+            wanted = set(query["fingerprint"]["$in"])
+            return [
+                doc
+                for doc in stored
+                if doc["status"] == query["status"] and doc["fingerprint"] in wanted
+            ]
+
+        def update_one(self, *args, **kwargs):
+            raise AssertionError("dismissed alert was rewritten")
+
+        def update_many(self, *args, **kwargs):
+            return None
+
+    class DB(dict):
+        def __getitem__(self, name):
+            return Coll()
+
+    sync_alerts(DB(), [{"fingerprint": fingerprint, "status": "open", "updated_at": "now"}])
+
+
 def test_partial_read_does_not_sync(monkeypatch, tmp_path):
     from app import loop as loop_mod
 
