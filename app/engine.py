@@ -76,13 +76,23 @@ def build_alerts(
         if doc.get("security_id"):
             slot["security_id"] = str(doc.get("security_id"))
 
-    broker_by_security = {}
+    broker_by_security: dict[str, dict] = {}
     for row in broker_rows:
         sec = str(row.get("security_id") or row.get("securityId") or "")
         if not sec:
             continue
-        broker_by_security[sec] = int(row.get("net_qty") if row.get("net_qty") is not None else row.get("netQty") or 0)
+        net = row.get("net_qty") if row.get("net_qty") is not None else row.get("netQty") or 0
+        broker_by_security[sec] = {
+            "net_qty": int(net),
+            "symbol": str(row.get("symbol") or row.get("instrument") or ""),
+            "broker_id": str(row.get("broker_id") or ""),
+        }
 
+    claimed_securities = {
+        str(slot.get("security_id") or "")
+        for slot in (*strategy_by_key.values(), *infra_by_key.values())
+        if slot.get("security_id")
+    }
     keys = set(strategy_by_key) | set(infra_by_key)
     alerts = []
     for key in sorted(keys):
@@ -97,7 +107,7 @@ def build_alerts(
             if not security_id:
                 broker_qty = 0
         else:
-            broker_qty = int(broker_by_security.get(security_id, 0))
+            broker_qty = int((broker_by_security.get(security_id) or {}).get("net_qty") or 0)
         proposal = propose_leg(
             strategy_qty=int((strategy or {}).get("signed_qty") or 0),
             infra_qty=int((infra or {}).get("signed_qty") or 0),
@@ -130,6 +140,50 @@ def build_alerts(
                 "security_id": security_id,
                 "underlying_scrip": (infra or {}).get("underlying_scrip") or 0,
                 "segment": (infra or {}).get("segment") or "",
+                "updated_at": now,
+                **proposal,
+            }
+        )
+    for sec in sorted(broker_by_security):
+        if sec in claimed_securities:
+            continue
+        row = broker_by_security[sec]
+        broker_qty = int(row.get("net_qty") or 0)
+        if broker_qty == 0:
+            continue
+        proposal = propose_leg(
+            strategy_qty=0,
+            infra_qty=0,
+            broker_qty=broker_qty,
+            shared_strike=False,
+        )
+        if proposal is None:
+            continue
+        instrument = row.get("symbol") or sec
+        broker_id = row.get("broker_id") or ""
+        fingerprint = "|".join(
+            [
+                "",
+                broker_id,
+                instrument,
+                proposal["action"],
+                "0",
+                "0",
+                str(proposal["broker_qty"]),
+            ]
+        )
+        alert_id = alert_id_factory(fingerprint) if alert_id_factory else fingerprint
+        alerts.append(
+            {
+                "alert_id": alert_id,
+                "fingerprint": fingerprint,
+                "status": "open",
+                "strategy_id": "",
+                "broker_id": broker_id,
+                "instrument": instrument,
+                "security_id": sec,
+                "underlying_scrip": 0,
+                "segment": "",
                 "updated_at": now,
                 **proposal,
             }

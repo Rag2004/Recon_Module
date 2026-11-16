@@ -176,6 +176,47 @@ def test_dismissed_fingerprint_is_not_reopened():
     sync_alerts(DB(), [{"fingerprint": fingerprint, "status": "open", "updated_at": "now"}])
 
 
+def test_broker_only_security_gets_a_reduce_alert():
+    alerts = build_alerts(
+        [],
+        [],
+        [{"security_id": "24450", "net_qty": 65, "symbol": "NIFTY26N1724450PE", "broker_id": "kotak_sandbox"}],
+        now="t",
+    )
+    assert len(alerts) == 1
+    row = alerts[0]
+    assert row["strategy_id"] == ""
+    assert row["strategy_qty"] == 0
+    assert row["infra_qty"] == 0
+    assert row["broker_qty"] == 65
+    assert row["action"] == "reduce_broker"
+    assert row["actionable"] is True
+    assert row["text"] == "Reduce the extra broker strike"
+    assert row["instrument"] == "NIFTY26N1724450PE"
+    assert row["order"]["side"] == "SELL"
+    assert row["order"]["order_tag"] == "StateReconcileSkipBook"
+    assert row["order"]["skip_infra_on_fill"] is True
+
+
+def test_owned_security_does_not_get_a_second_broker_row():
+    strategy = [
+        {
+            "strategy_id": "NF_PEN_12_T2",
+            "broker_id": "kotak_sandbox",
+            "instrument": "NIFTY-17Nov2026-24450-PE",
+            "security_id": "24450",
+            "signed_qty": 65,
+        }
+    ]
+    alerts = build_alerts(
+        strategy,
+        [],
+        [{"security_id": "24450", "net_qty": 65, "symbol": "NIFTY26N1724450PE"}],
+        now="t",
+    )
+    assert [row["strategy_id"] for row in alerts] == ["NF_PEN_12_T2"]
+
+
 def test_partial_read_does_not_sync(monkeypatch, tmp_path):
     from app import loop as loop_mod
 
