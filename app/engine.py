@@ -25,6 +25,35 @@ def resolve_broker_security_id(
     return primary or secondary
 
 
+def _join_same_security(strategy_by_key: dict, infra_by_key: dict) -> None:
+    """One security is one leg, even when the strategy file stored the id as the name."""
+    strategy_ids: dict[tuple, list] = defaultdict(list)
+    infra_ids: dict[tuple, list] = defaultdict(list)
+    for key, slot in strategy_by_key.items():
+        sec = str(slot.get("security_id") or "")
+        if sec:
+            strategy_ids[(slot["strategy_id"], slot["broker_id"], sec)].append(key)
+    for key, slot in infra_by_key.items():
+        sec = str(slot.get("security_id") or "")
+        if sec:
+            infra_ids[(slot["strategy_id"], slot["broker_id"], sec)].append(key)
+    for ident, strategy_keys in strategy_ids.items():
+        infra_keys = infra_ids.get(ident) or []
+        if len(strategy_keys) != 1 or len(infra_keys) != 1:
+            continue
+        strategy_key, infra_key = strategy_keys[0], infra_keys[0]
+        if strategy_key == infra_key:
+            continue
+        strategy = strategy_by_key.pop(strategy_key)
+        infra = infra_by_key.pop(infra_key)
+        instrument = infra["instrument"] or strategy["instrument"]
+        strategy["instrument"] = instrument
+        infra["instrument"] = instrument
+        merged = (ident[0], ident[1], instrument)
+        strategy_by_key[merged] = strategy
+        infra_by_key[merged] = infra
+
+
 def build_alerts(
     strategy_rows: list[dict],
     infra_rows: list[dict],
@@ -88,6 +117,7 @@ def build_alerts(
             "broker_id": str(row.get("broker_id") or ""),
         }
 
+    _join_same_security(strategy_by_key, infra_by_key)
     claimed_securities = {
         str(slot.get("security_id") or "")
         for slot in (*strategy_by_key.values(), *infra_by_key.values())

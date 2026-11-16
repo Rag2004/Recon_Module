@@ -198,6 +198,36 @@ def test_broker_only_security_gets_a_reduce_alert():
     assert row["order"]["skip_infra_on_fill"] is True
 
 
+def test_security_id_name_matches_the_contract_row():
+    alerts = build_alerts(
+        [
+            {
+                "strategy_id": "NF_TGT_PEN12_T1",
+                "broker_id": "kotak_sandbox",
+                "instrument": "45401",
+                "security_id": "45401",
+                "signed_qty": -65,
+            }
+        ],
+        [
+            {
+                "strategy_id": "NF_TGT_PEN12_T1",
+                "broker_id": "kotak_sandbox",
+                "security_id": "45401",
+                "underlying": "NIFTY",
+                "expiry": "2026-11-17",
+                "strike": 25250,
+                "option_type": "PE",
+                "side": "SELL",
+                "quantity": 65,
+            }
+        ],
+        [{"security_id": "45401", "net_qty": -65}],
+        now="t",
+    )
+    assert alerts == []
+
+
 def test_owned_security_does_not_get_a_second_broker_row():
     strategy = [
         {
