@@ -198,6 +198,75 @@ def test_broker_only_security_gets_a_reduce_alert():
     assert row["order"]["skip_infra_on_fill"] is True
 
 
+def test_broker_only_cnc_keeps_the_delivery_product():
+    alerts = build_alerts(
+        [],
+        [],
+        [
+            {
+                "security_id": "24450",
+                "net_qty": 65,
+                "symbol": "NIFTY26N1724450PE",
+                "broker_id": "kotak_sandbox",
+                "product_type": "CNC",
+            },
+            {
+                "security_id": "24450",
+                "net_qty": -65,
+                "symbol": "NIFTY26N1724450PE",
+                "broker_id": "kotak_sandbox",
+                "product_type": "MIS",
+            },
+        ],
+        now="t",
+    )
+    by_product = {row["product_type"]: row for row in alerts}
+    assert set(by_product) == {"CNC", "MIS"}
+    assert by_product["CNC"]["order"]["product_type"] == "CNC"
+    assert by_product["CNC"]["order"]["side"] == "SELL"
+    assert by_product["MIS"]["order"]["product_type"] == "MIS"
+    assert by_product["MIS"]["order"]["side"] == "BUY"
+    assert by_product["CNC"]["fingerprint"] != by_product["MIS"]["fingerprint"]
+
+
+def test_claimed_mis_still_leaves_the_cnc_leftover():
+    strategy = [
+        {
+            "strategy_id": "NF_PEN_12_T2",
+            "broker_id": "kotak_sandbox",
+            "instrument": "NIFTY-17Nov2026-24450-PE",
+            "security_id": "24450",
+            "signed_qty": -65,
+        }
+    ]
+    infra = [
+        {
+            "strategy_id": "NF_PEN_12_T2",
+            "broker_id": "kotak_sandbox",
+            "security_id": "24450",
+            "underlying": "NIFTY",
+            "expiry": "2026-11-17",
+            "strike": 24450,
+            "option_type": "PE",
+            "side": "SELL",
+            "quantity": 65,
+        }
+    ]
+    alerts = build_alerts(
+        strategy,
+        infra,
+        [
+            {"security_id": "24450", "net_qty": -65, "symbol": "NIFTY26N1724450PE", "product_type": "MIS"},
+            {"security_id": "24450", "net_qty": 65, "symbol": "NIFTY26N1724450PE", "product_type": "CNC"},
+        ],
+        now="t",
+    )
+    assert [row["strategy_id"] for row in alerts] == [""]
+    assert alerts[0]["product_type"] == "CNC"
+    assert alerts[0]["order"]["product_type"] == "CNC"
+    assert alerts[0]["order"]["side"] == "SELL"
+
+
 def test_security_id_name_matches_the_contract_row():
     alerts = build_alerts(
         [

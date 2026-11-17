@@ -13,6 +13,7 @@ from pymongo import MongoClient
 from app.books import read_strategy_csv
 from app.config import settings
 from app.engine import build_alerts
+from app.kotak_positions import normalize_product
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,20 @@ def dhan_credentials() -> tuple[str, str]:
     return str(settings.DHAN_ACCESS_TOKEN or "").strip(), str(settings.DHAN_CLIENT_ID or "").strip()
 
 
+def stamp_product(rows: list[dict]) -> list[dict]:
+    """Copy productType/prod onto product_type so the engine can key MIS vs CNC."""
+    stamped = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        item = dict(row)
+        item["product_type"] = normalize_product(
+            item.get("product_type") or item.get("productType") or item.get("prod") or item.get("product")
+        )
+        stamped.append(item)
+    return stamped
+
+
 def fetch_dhan_positions() -> list[dict]:
     token, client_id = dhan_credentials()
     if not token or not client_id:
@@ -66,12 +81,12 @@ def fetch_dhan_positions() -> list[dict]:
         raise RuntimeError(f"Dhan positions {resp.status_code}")
     payload = resp.json()
     if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
+        return stamp_product([row for row in payload if isinstance(row, dict)])
     if isinstance(payload, dict):
         for key in ("data", "positions"):
             nested = payload.get(key)
             if isinstance(nested, list):
-                return [row for row in nested if isinstance(row, dict)]
+                return stamp_product([row for row in nested if isinstance(row, dict)])
     raise RuntimeError("Dhan positions payload was not a list")
 
 
@@ -124,11 +139,11 @@ def fetch_mock_broker_positions(db) -> list[dict]:
 
 def fetch_broker_positions(db) -> list[dict]:
     if broker_mode() == "mock":
-        return fetch_mock_broker_positions(db)
+        return stamp_product(fetch_mock_broker_positions(db))
     if broker_mode() == "kotak":
         from app.kotak_positions import fetch_kotak_positions_cached
 
-        return fetch_kotak_positions_cached()
+        return stamp_product(fetch_kotak_positions_cached())
     return fetch_dhan_positions()
 
 

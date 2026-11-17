@@ -6,23 +6,36 @@ from typing import Any, Callable
 
 from app.books import infra_instrument, signed_qty
 from app.diff import propose_leg
+from app.kotak_positions import normalize_product
+
+_ALGO_PRODUCTS = {"", "MIS"}
 
 
 def resolve_broker_security_id(
     strategy: dict | None,
     infra: dict | None,
-    broker_by_security: dict[str, int],
+    broker_security_ids: set[str],
 ) -> str:
     """Prefer the desk Mongo id. Fall back to the strategy id, then the other side if Neo misses."""
     infra_id = str((infra or {}).get("security_id") or "").strip()
     strategy_id = str((strategy or {}).get("security_id") or "").strip()
     primary = infra_id or strategy_id
-    if primary and primary in broker_by_security:
+    if primary and primary in broker_security_ids:
         return primary
     secondary = strategy_id if primary == infra_id else infra_id
-    if secondary and secondary in broker_by_security:
+    if secondary and secondary in broker_security_ids:
         return secondary
     return primary or secondary
+
+
+def _broker_product(row: dict) -> str:
+    return normalize_product(
+        row.get("product_type") or row.get("productType") or row.get("prod") or row.get("product")
+    )
+
+
+def _bucket_key(security_id: str, product_type: str) -> str:
+    return f"{security_id}|{product_type}"
 
 
 def _join_same_security(strategy_by_key: dict, infra_by_key: dict) -> None:
@@ -105,17 +118,34 @@ def build_alerts(
         if doc.get("security_id"):
             slot["security_id"] = str(doc.get("security_id"))
 
-    broker_by_security: dict[str, dict] = {}
+    broker_buckets: dict[str, dict] = {}
     for row in broker_rows:
         sec = str(row.get("security_id") or row.get("securityId") or "")
         if not sec:
             continue
+        product = _broker_product(row)
         net = row.get("net_qty") if row.get("net_qty") is not None else row.get("netQty") or 0
-        broker_by_security[sec] = {
+        key = _bucket_key(sec, product)
+        bucket = broker_buckets.get(key)
+        if bucket:
+            bucket["net_qty"] += int(net)
+            continue
+        broker_buckets[key] = {
+            "security_id": sec,
+            "product_type": product,
             "net_qty": int(net),
             "symbol": str(row.get("symbol") or row.get("instrument") or ""),
             "broker_id": str(row.get("broker_id") or ""),
         }
+
+    broker_security_ids = {row["security_id"] for row in broker_buckets.values()}
+
+    def algo_bucket(security_id: str) -> dict | None:
+        """Algo book is MIS. A row with no product is the same book until Neo sends one."""
+        mis = broker_buckets.get(_bucket_key(security_id, "MIS"))
+        if mis:
+            return mis
+        return broker_buckets.get(_bucket_key(security_id, ""))
 
     _join_same_security(strategy_by_key, infra_by_key)
     claimed_securities = {
@@ -128,21 +158,25 @@ def build_alerts(
     for key in sorted(keys):
         strategy = strategy_by_key.get(key)
         infra = infra_by_key.get(key)
-        security_id = resolve_broker_security_id(strategy, infra, broker_by_security)
+        security_id = resolve_broker_security_id(strategy, infra, broker_security_ids)
         owners = owners_by_security.get(security_id, set())
         shared = bool(security_id) and len(owners) > 1
+        product = ""
         broker_qty: int | None
         if not security_id or shared:
             broker_qty = None if shared else 0
             if not security_id:
                 broker_qty = 0
         else:
-            broker_qty = int((broker_by_security.get(security_id) or {}).get("net_qty") or 0)
+            held = algo_bucket(security_id)
+            product = str((held or {}).get("product_type") or "")
+            broker_qty = int((held or {}).get("net_qty") or 0)
         proposal = propose_leg(
             strategy_qty=int((strategy or {}).get("signed_qty") or 0),
             infra_qty=int((infra or {}).get("signed_qty") or 0),
             broker_qty=broker_qty,
             shared_strike=shared,
+            product_type=product,
         )
         if proposal is None:
             continue
@@ -156,6 +190,7 @@ def build_alerts(
                 str(proposal["strategy_qty"]),
                 str(proposal["infra_qty"]),
                 str(proposal["broker_qty"]),
+                product,
             ]
         )
         alert_id = alert_id_factory(fingerprint) if alert_id_factory else fingerprint
@@ -168,16 +203,20 @@ def build_alerts(
                 "broker_id": base.get("broker_id"),
                 "instrument": base.get("instrument"),
                 "security_id": security_id,
+                "product_type": product,
                 "underlying_scrip": (infra or {}).get("underlying_scrip") or 0,
                 "segment": (infra or {}).get("segment") or "",
                 "updated_at": now,
                 **proposal,
             }
         )
-    for sec in sorted(broker_by_security):
-        if sec in claimed_securities:
-            continue
-        row = broker_by_security[sec]
+    for bucket_key in sorted(broker_buckets):
+        row = broker_buckets[bucket_key]
+        sec = row["security_id"]
+        product = row["product_type"]
+        if sec in claimed_securities and product in _ALGO_PRODUCTS:
+            if not (product == "" and _bucket_key(sec, "MIS") in broker_buckets):
+                continue
         broker_qty = int(row.get("net_qty") or 0)
         if broker_qty == 0:
             continue
@@ -186,6 +225,7 @@ def build_alerts(
             infra_qty=0,
             broker_qty=broker_qty,
             shared_strike=False,
+            product_type=product,
         )
         if proposal is None:
             continue
@@ -200,6 +240,7 @@ def build_alerts(
                 "0",
                 "0",
                 str(proposal["broker_qty"]),
+                product,
             ]
         )
         alert_id = alert_id_factory(fingerprint) if alert_id_factory else fingerprint
@@ -212,6 +253,7 @@ def build_alerts(
                 "broker_id": broker_id,
                 "instrument": instrument,
                 "security_id": sec,
+                "product_type": product,
                 "underlying_scrip": 0,
                 "segment": "",
                 "updated_at": now,

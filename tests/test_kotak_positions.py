@@ -28,7 +28,22 @@ def test_rows_drop_flat_positions():
         ],
     }
     rows = rows_from_positions(payload)
-    assert rows == [{"security_id": "1", "net_qty": 5, "symbol": "AAA"}]
+    assert rows == [{"security_id": "1", "net_qty": 5, "symbol": "AAA", "product_type": ""}]
+
+
+def test_rows_keep_cnc_and_do_not_collapse_products():
+    payload = {
+        "stat": "ok",
+        "data": [
+            {"tok": "9", "prod": "CNC", "flBuyQty": "65", "flSellQty": "0", "trdSym": "NIFTY26N1725200PE"},
+            {"tok": "9", "prod": "MIS", "flBuyQty": "0", "flSellQty": "65", "trdSym": "NIFTY26N1725200PE"},
+        ],
+    }
+    rows = rows_from_positions(payload)
+    assert rows == [
+        {"security_id": "9", "net_qty": 65, "symbol": "NIFTY26N1725200PE", "product_type": "CNC"},
+        {"security_id": "9", "net_qty": -65, "symbol": "NIFTY26N1725200PE", "product_type": "MIS"},
+    ]
 
 
 def test_error_payload_is_rejected():

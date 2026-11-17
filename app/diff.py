@@ -13,6 +13,7 @@ def propose_leg(
     infra_qty: int,
     broker_qty: int | None,
     shared_strike: bool,
+    product_type: str = "",
 ) -> dict[str, Any] | None:
     """Return an alert payload, or None when the three books match.
 
@@ -53,7 +54,7 @@ def propose_leg(
 
     if infra_qty == strategy_qty and broker_qty != strategy_qty:
         action, text = _broker_action(strategy_qty, broker_qty)
-        order = _order_toward(strategy_qty, broker_qty, skip_book=True)
+        order = _order_toward(strategy_qty, broker_qty, skip_book=True, product_type=product_type)
         return _alert(
             action=action,
             actionable=action != "review",
@@ -119,17 +120,22 @@ def _both_gap_action(strategy_qty: int, held_qty: int) -> tuple[str, str]:
     return "review", "Both books differ from strategy"
 
 
-def _order_toward(target: int, current: int, *, skip_book: bool) -> dict[str, Any]:
+def _order_toward(
+    target: int, current: int, *, skip_book: bool, product_type: str = ""
+) -> dict[str, Any]:
     delta = target - current
     side = "BUY" if delta > 0 else "SELL"
     increasing = abs(target) > abs(current) and (current == 0 or (target > 0) == (current > 0))
-    return {
+    order = {
         "side": side,
         "quantity": abs(delta),
         "order_class": "ENTRY" if increasing or target != 0 and current == 0 else "EXIT",
         "order_tag": TAG_SKIP_BOOK if skip_book else TAG_REPAIR,
         "skip_infra_on_fill": skip_book,
     }
+    if skip_book:
+        order["product_type"] = product_type
+    return order
 
 
 def _alert(

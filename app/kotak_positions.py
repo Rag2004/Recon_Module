@@ -60,6 +60,19 @@ def neo_net_qty(row: dict) -> int:
     return int(round(net))
 
 
+def normalize_product(raw) -> str:
+    """Neo/Dhan product → the same vocabulary Kotak place already accepts."""
+    text = str(raw or "").strip().upper()
+    return {
+        "INTRADAY": "MIS",
+        "MIS": "MIS",
+        "MARGIN": "NRML",
+        "NRML": "NRML",
+        "CNC": "CNC",
+        "MTF": "MTF",
+    }.get(text, "")
+
+
 def neo_security_id(row: dict) -> str:
     token = str(row.get("tok") or row.get("token") or "").strip()
     if token:
@@ -93,7 +106,15 @@ def rows_from_positions(payload) -> list[dict]:
         net = neo_net_qty(row)
         if not security_id or net == 0:
             continue
-        out.append({"security_id": security_id, "net_qty": net, "symbol": str(row.get("trdSym") or "")})
+        product = normalize_product(row.get("prod") or row.get("product") or row.get("productType"))
+        out.append(
+            {
+                "security_id": security_id,
+                "net_qty": net,
+                "symbol": str(row.get("trdSym") or ""),
+                "product_type": product,
+            }
+        )
     return out
 
 
